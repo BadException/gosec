@@ -1,8 +1,9 @@
+// +build go1.12
+
 package main
 
 import (
 	"bytes"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -12,7 +13,6 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/mozilla/tls-observatory/constants"
@@ -35,8 +35,8 @@ type ServerSideTLSJson struct {
 // Configuration represents configurations levels declared by the Mozilla server-side-tls
 // see https://wiki.mozilla.org/Security/Server_Side_TLS
 type Configuration struct {
-	OpenSSLCiphersuites   string   `json:"openssl_ciphersuites"`
-	Ciphersuites          []string `json:"ciphersuites"`
+	OpenSSLCiphersuites   []string `json:"openssl_ciphersuites"`
+	OpenSSLCiphers        []string `json:"openssl_ciphers"`
 	TLSVersions           []string `json:"tls_versions"`
 	TLSCurves             []string `json:"tls_curves"`
 	CertificateTypes      []string `json:"certificate_types"`
@@ -47,6 +47,9 @@ type Configuration struct {
 	ECDHParamSize         float64  `json:"ecdh_param_size"`
 	HstsMinAge            float64  `json:"hsts_min_age"`
 	OldestClients         []string `json:"oldest_clients"`
+	OCSPStample           bool     `json:"ocsp_staple"`
+	ServerPreferedOrder   bool     `json:"server_preferred_order"`
+	MaxCertLifespan       float64  `json:"maximum_certificate_lifespan"`
 }
 
 type goCipherConfiguration struct {
@@ -62,7 +65,7 @@ type goTLSConfiguration struct {
 
 // getTLSConfFromURL retrieves the json containing the TLS configurations from the specified URL.
 func getTLSConfFromURL(url string) (*ServerSideTLSJson, error) {
-	r, err := http.Get(url)
+	r, err := http.Get(url) // #nosec G107
 	if err != nil {
 		return nil, err
 	}
@@ -84,13 +87,19 @@ func getGoCipherConfig(name string, sstls ServerSideTLSJson) (goCipherConfigurat
 		return cipherConf, fmt.Errorf("TLS configuration '%s' not found", name)
 	}
 
-	for _, cipherName := range conf.Ciphersuites {
+	// These ciphers are already defined in IANA format
+	cipherConf.Ciphers = append(cipherConf.Ciphers, conf.OpenSSLCiphersuites...)
+
+	for _, cipherName := range conf.OpenSSLCiphers {
 		cipherSuite, ok := constants.CipherSuites[cipherName]
 		if !ok {
 			log.Printf("'%s' cipher is not available in crypto/tls package\n", cipherName)
 		}
 		if len(cipherSuite.IANAName) > 0 {
 			cipherConf.Ciphers = append(cipherConf.Ciphers, cipherSuite.IANAName)
+			if len(cipherSuite.NSSName) > 0 && cipherSuite.NSSName != cipherSuite.IANAName {
+				cipherConf.Ciphers = append(cipherConf.Ciphers, cipherSuite.NSSName)
+			}
 		}
 	}
 
@@ -102,26 +111,6 @@ func getGoCipherConfig(name string, sstls ServerSideTLSJson) (goCipherConfigurat
 		return cipherConf, fmt.Errorf("No TLS versions found for configuration '%s'", name)
 	}
 	return cipherConf, nil
-}
-
-func mapTLSVersions(tlsVersions []string) []int {
-	var versions []int
-	for _, tlsVersion := range tlsVersions {
-		switch tlsVersion {
-		case "TLSv1.2":
-			versions = append(versions, tls.VersionTLS12)
-		case "TLSv1.1":
-			versions = append(versions, tls.VersionTLS11)
-		case "TLSv1":
-			versions = append(versions, tls.VersionTLS10)
-		case "SSLv3":
-			versions = append(versions, tls.VersionSSL30)
-		default:
-			continue
-		}
-	}
-	sort.Ints(versions)
-	return versions
 }
 
 func getGoTLSConf() (goTLSConfiguration, error) {
@@ -200,5 +189,5 @@ func main() {
 	outputPath := filepath.Join(dir, *outputFile)
 	if err := ioutil.WriteFile(outputPath, src, 0644); err != nil {
 		log.Fatalf("Writing output: %s", err)
-	}
+	} // #nosec G306
 }

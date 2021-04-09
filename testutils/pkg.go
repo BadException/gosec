@@ -3,37 +3,34 @@ package testutils
 import (
 	"fmt"
 	"go/build"
-	"go/parser"
 	"io/ioutil"
 	"log"
 	"os"
 	"path"
 	"strings"
 
-	"github.com/securego/gosec"
-	"golang.org/x/tools/go/loader"
+	"github.com/securego/gosec/v2"
+	"golang.org/x/tools/go/packages"
 )
 
 type buildObj struct {
-	pkg     *build.Package
-	config  loader.Config
-	program *loader.Program
+	pkg    *build.Package
+	config *packages.Config
+	pkgs   []*packages.Package
 }
 
 // TestPackage is a mock package for testing purposes
 type TestPackage struct {
 	Path   string
 	Files  map[string]string
-	ondisk bool
+	onDisk bool
 	build  *buildObj
 }
 
 // NewTestPackage will create a new and empty package. Must call Close() to cleanup
-// auxilary files
+// auxiliary files
 func NewTestPackage() *TestPackage {
-	// Files must exist in $GOPATH
-	sourceDir := path.Join(os.Getenv("GOPATH"), "src")
-	workingDir, err := ioutil.TempDir(sourceDir, "gosecs_test")
+	workingDir, err := ioutil.TempDir("", "gosecs_test")
 	if err != nil {
 		return nil
 	}
@@ -41,7 +38,7 @@ func NewTestPackage() *TestPackage {
 	return &TestPackage{
 		Path:   workingDir,
 		Files:  make(map[string]string),
-		ondisk: false,
+		onDisk: false,
 		build:  nil,
 	}
 }
@@ -52,15 +49,15 @@ func (p *TestPackage) AddFile(filename, content string) {
 }
 
 func (p *TestPackage) write() error {
-	if p.ondisk {
+	if p.onDisk {
 		return nil
 	}
 	for filename, content := range p.Files {
 		if e := ioutil.WriteFile(filename, []byte(content), 0644); e != nil {
 			return e
-		}
+		} // #nosec G306
 	}
-	p.ondisk = true
+	p.onDisk = true
 	return nil
 }
 
@@ -78,20 +75,22 @@ func (p *TestPackage) Build() error {
 	}
 
 	var packageFiles []string
-	packageConfig := loader.Config{Build: &build.Default, ParserMode: parser.ParseComments}
 	for _, filename := range basePackage.GoFiles {
 		packageFiles = append(packageFiles, path.Join(p.Path, filename))
 	}
 
-	packageConfig.CreateFromFilenames(basePackage.Name, packageFiles...)
-	program, err := packageConfig.Load()
+	conf := &packages.Config{
+		Mode:  gosec.LoadMode,
+		Tests: false,
+	}
+	pkgs, err := packages.Load(conf, packageFiles...)
 	if err != nil {
 		return err
 	}
 	p.build = &buildObj{
-		pkg:     basePackage,
-		config:  packageConfig,
-		program: program,
+		pkg:    basePackage,
+		config: conf,
+		pkgs:   pkgs,
 	}
 	return nil
 }
@@ -103,19 +102,20 @@ func (p *TestPackage) CreateContext(filename string) *gosec.Context {
 		return nil
 	}
 
-	for _, pkg := range p.build.program.Created {
-		for _, file := range pkg.Files {
-			pkgFile := p.build.program.Fset.File(file.Pos()).Name()
+	for _, pkg := range p.build.pkgs {
+		for _, file := range pkg.Syntax {
+			pkgFile := pkg.Fset.File(file.Pos()).Name()
 			strip := fmt.Sprintf("%s%c", p.Path, os.PathSeparator)
 			pkgFile = strings.TrimPrefix(pkgFile, strip)
 			if pkgFile == filename {
 				ctx := &gosec.Context{
-					FileSet: p.build.program.Fset,
-					Root:    file,
-					Config:  gosec.NewConfig(),
-					Info:    &pkg.Info,
-					Pkg:     pkg.Pkg,
-					Imports: gosec.NewImportTracker(),
+					FileSet:      pkg.Fset,
+					Root:         file,
+					Config:       gosec.NewConfig(),
+					Info:         pkg.TypesInfo,
+					Pkg:          pkg.Types,
+					Imports:      gosec.NewImportTracker(),
+					PassedValues: make(map[string]interface{}),
 				}
 				ctx.Imports.TrackPackages(ctx.Pkg.Imports()...)
 				return ctx
@@ -127,10 +127,23 @@ func (p *TestPackage) CreateContext(filename string) *gosec.Context {
 
 // Close will delete the package and all files in that directory
 func (p *TestPackage) Close() {
-	if p.ondisk {
+	if p.onDisk {
 		err := os.RemoveAll(p.Path)
 		if err != nil {
 			log.Fatal(err)
 		}
 	}
+}
+
+// Pkgs returns the current built packages
+func (p *TestPackage) Pkgs() []*packages.Package {
+	if p.build != nil {
+		return p.build.pkgs
+	}
+	return []*packages.Package{}
+}
+
+// PrintErrors prints to os.Stderr the accumulated errors of built packages
+func (p *TestPackage) PrintErrors() int {
+	return packages.PrintErrors(p.Pkgs())
 }

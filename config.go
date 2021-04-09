@@ -14,6 +14,18 @@ const (
 	Globals = "global"
 )
 
+// GlobalOption defines the name of the global options
+type GlobalOption string
+
+const (
+	// Nosec global option for #nosec directive
+	Nosec GlobalOption = "nosec"
+	// Audit global option which indicates that gosec runs in audit mode
+	Audit GlobalOption = "audit"
+	// NoSecAlternative global option alternative for #nosec directive
+	NoSecAlternative GlobalOption = "#nosec"
+)
+
 // Config is used to provide configuration and customization to each of the rules.
 type Config map[string]interface{}
 
@@ -22,8 +34,24 @@ type Config map[string]interface{}
 // or from a *os.File.
 func NewConfig() Config {
 	cfg := make(Config)
-	cfg[Globals] = make(map[string]string)
+	cfg[Globals] = make(map[GlobalOption]string)
 	return cfg
+}
+
+func (c Config) keyToGlobalOptions(key string) GlobalOption {
+	return GlobalOption(key)
+}
+
+func (c Config) convertGlobals() {
+	if globals, ok := c[Globals]; ok {
+		if settings, ok := globals.(map[string]interface{}); ok {
+			validGlobals := map[GlobalOption]string{}
+			for k, v := range settings {
+				validGlobals[c.keyToGlobalOptions(k)] = fmt.Sprintf("%v", v)
+			}
+			c[Globals] = validGlobals
+		}
+	}
 }
 
 // ReadFrom implements the io.ReaderFrom interface. This
@@ -37,6 +65,7 @@ func (c Config) ReadFrom(r io.Reader) (int64, error) {
 	if err = json.Unmarshal(data, &c); err != nil {
 		return int64(len(data)), err
 	}
+	c.convertGlobals()
 	return int64(len(data)), nil
 }
 
@@ -65,9 +94,9 @@ func (c Config) Set(section string, value interface{}) {
 }
 
 // GetGlobal returns value associated with global configuration option
-func (c Config) GetGlobal(option string) (string, error) {
+func (c Config) GetGlobal(option GlobalOption) (string, error) {
 	if globals, ok := c[Globals]; ok {
-		if settings, ok := globals.(map[string]string); ok {
+		if settings, ok := globals.(map[GlobalOption]string); ok {
 			if value, ok := settings[option]; ok {
 				return value, nil
 			}
@@ -75,14 +104,22 @@ func (c Config) GetGlobal(option string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no global config options found")
-
 }
 
-// SetGlobal associates a value with a global configuration ooption
-func (c Config) SetGlobal(option, value string) {
+// SetGlobal associates a value with a global configuration option
+func (c Config) SetGlobal(option GlobalOption, value string) {
 	if globals, ok := c[Globals]; ok {
-		if settings, ok := globals.(map[string]string); ok {
+		if settings, ok := globals.(map[GlobalOption]string); ok {
 			settings[option] = value
 		}
 	}
+}
+
+// IsGlobalEnabled checks if a global option is enabled
+func (c Config) IsGlobalEnabled(option GlobalOption) (bool, error) {
+	value, err := c.GetGlobal(option)
+	if err != nil {
+		return false, err
+	}
+	return (value == "true" || value == "enabled"), nil
 }

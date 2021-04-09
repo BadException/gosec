@@ -2,10 +2,11 @@ package gosec_test
 
 import (
 	"bytes"
+	"strings"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-	"github.com/securego/gosec"
+	"github.com/securego/gosec/v2"
 )
 
 var _ = Describe("Configuration", func() {
@@ -81,23 +82,61 @@ var _ = Describe("Configuration", func() {
 		It("should have a default global section", func() {
 			settings, err := configuration.Get("global")
 			Expect(err).Should(BeNil())
-			expectedType := make(map[string]string)
+			expectedType := make(map[gosec.GlobalOption]string)
 			Expect(settings).Should(BeAssignableToTypeOf(expectedType))
 		})
 
 		It("should save global settings to correct section", func() {
-			configuration.SetGlobal("nosec", "enabled")
+			configuration.SetGlobal(gosec.Nosec, "enabled")
 			settings, err := configuration.Get("global")
 			Expect(err).Should(BeNil())
-			if globals, ok := settings.(map[string]string); ok {
+			if globals, ok := settings.(map[gosec.GlobalOption]string); ok {
 				Expect(globals["nosec"]).Should(MatchRegexp("enabled"))
 			} else {
 				Fail("globals are not defined as map")
 			}
 
-			setValue, err := configuration.GetGlobal("nosec")
+			setValue, err := configuration.GetGlobal(gosec.Nosec)
 			Expect(err).Should(BeNil())
 			Expect(setValue).Should(MatchRegexp("enabled"))
+		})
+
+		It("should find global settings which are enabled", func() {
+			configuration.SetGlobal(gosec.Nosec, "enabled")
+			enabled, err := configuration.IsGlobalEnabled(gosec.Nosec)
+			Expect(err).Should(BeNil())
+			Expect(enabled).Should(BeTrue())
+		})
+
+		It("should parse the global settings of type string from file", func() {
+			config := `
+			{
+				"global": {
+					"nosec": "enabled"
+				}
+			}`
+			cfg := gosec.NewConfig()
+			_, err := cfg.ReadFrom(strings.NewReader(config))
+			Expect(err).Should(BeNil())
+
+			value, err := cfg.GetGlobal(gosec.Nosec)
+			Expect(err).Should(BeNil())
+			Expect(value).Should(Equal("enabled"))
+		})
+		It("should parse the global settings of other types from file", func() {
+			config := `
+			{
+				"global": {
+					"nosec": true
+				}
+			}`
+			cfg := gosec.NewConfig()
+			_, err := cfg.ReadFrom(strings.NewReader(config))
+			Expect(err).Should(BeNil())
+
+			value, err := cfg.GetGlobal(gosec.Nosec)
+			Expect(err).Should(BeNil())
+			Expect(value).Should(Equal("true"))
 		})
 	})
 })

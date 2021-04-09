@@ -18,7 +18,7 @@ import (
 	"go/ast"
 	"go/types"
 
-	"github.com/securego/gosec"
+	"github.com/securego/gosec/v2"
 )
 
 type noErrorCheck struct {
@@ -52,14 +52,17 @@ func returnsError(callExpr *ast.CallExpr, ctx *gosec.Context) int {
 func (r *noErrorCheck) Match(n ast.Node, ctx *gosec.Context) (*gosec.Issue, error) {
 	switch stmt := n.(type) {
 	case *ast.AssignStmt:
-		for _, expr := range stmt.Rhs {
-			if callExpr, ok := expr.(*ast.CallExpr); ok && r.whitelist.ContainsCallExpr(expr, ctx) == nil {
-				pos := returnsError(callExpr, ctx)
-				if pos < 0 || pos >= len(stmt.Lhs) {
-					return nil, nil
-				}
-				if id, ok := stmt.Lhs[pos].(*ast.Ident); ok && id.Name == "_" {
-					return gosec.NewIssue(ctx, n, r.ID(), r.What, r.Severity, r.Confidence), nil
+		cfg := ctx.Config
+		if enabled, err := cfg.IsGlobalEnabled(gosec.Audit); err == nil && enabled {
+			for _, expr := range stmt.Rhs {
+				if callExpr, ok := expr.(*ast.CallExpr); ok && r.whitelist.ContainsCallExpr(expr, ctx) == nil {
+					pos := returnsError(callExpr, ctx)
+					if pos < 0 || pos >= len(stmt.Lhs) {
+						return nil, nil
+					}
+					if id, ok := stmt.Lhs[pos].(*ast.Ident); ok && id.Name == "_" {
+						return gosec.NewIssue(ctx, n, r.ID(), r.What, r.Severity, r.Confidence), nil
+					}
 				}
 			}
 		}
@@ -81,15 +84,19 @@ func NewNoErrorCheck(id string, conf gosec.Config) (gosec.Rule, []ast.Node) {
 	whitelist := gosec.NewCallList()
 	whitelist.AddAll("bytes.Buffer", "Write", "WriteByte", "WriteRune", "WriteString")
 	whitelist.AddAll("fmt", "Print", "Printf", "Println", "Fprint", "Fprintf", "Fprintln")
+	whitelist.AddAll("strings.Builder", "Write", "WriteByte", "WriteRune", "WriteString")
 	whitelist.Add("io.PipeWriter", "CloseWithError")
 
 	if configured, ok := conf["G104"]; ok {
-		if whitelisted, ok := configured.(map[string][]string); ok {
-			for key, val := range whitelisted {
-				whitelist.AddAll(key, val...)
+		if whitelisted, ok := configured.(map[string]interface{}); ok {
+			for pkg, funcs := range whitelisted {
+				if funcs, ok := funcs.([]interface{}); ok {
+					whitelist.AddAll(pkg, toStringSlice(funcs)...)
+				}
 			}
 		}
 	}
+
 	return &noErrorCheck{
 		MetaData: gosec.MetaData{
 			ID:         id,
@@ -99,4 +106,14 @@ func NewNoErrorCheck(id string, conf gosec.Config) (gosec.Rule, []ast.Node) {
 		},
 		whitelist: whitelist,
 	}, []ast.Node{(*ast.AssignStmt)(nil), (*ast.ExprStmt)(nil)}
+}
+
+func toStringSlice(values []interface{}) []string {
+	result := []string{}
+	for _, value := range values {
+		if value, ok := value.(string); ok {
+			result = append(result, value)
+		}
+	}
+	return result
 }

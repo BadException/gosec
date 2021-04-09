@@ -15,7 +15,10 @@ package gosec
 
 import (
 	"go/ast"
+	"strings"
 )
+
+const vendorPath = "vendor/"
 
 type set map[string]bool
 
@@ -53,26 +56,54 @@ func (c CallList) Contains(selector, ident string) bool {
 	return false
 }
 
-// ContainsCallExpr resolves the call expression name and type
-/// or package and determines if it exists within the CallList
-func (c CallList) ContainsCallExpr(n ast.Node, ctx *Context) *ast.CallExpr {
+// ContainsPointer returns true if a pointer to the selector type or the type
+// itself is a members of this call list.
+func (c CallList) ContainsPointer(selector, indent string) bool {
+	if strings.HasPrefix(selector, "*") {
+		if c.Contains(selector, indent) {
+			return true
+		}
+		s := strings.TrimPrefix(selector, "*")
+		return c.Contains(s, indent)
+	}
+	return false
+}
+
+// ContainsPkgCallExpr resolves the call expression name and type, and then further looks
+// up the package path for that type. Finally, it determines if the call exists within the call list
+func (c CallList) ContainsPkgCallExpr(n ast.Node, ctx *Context, stripVendor bool) *ast.CallExpr {
 	selector, ident, err := GetCallInfo(n, ctx)
 	if err != nil {
 		return nil
 	}
 
-	// Use only explicit path to reduce conflicts
-	if path, ok := GetImportPath(selector, ctx); ok && c.Contains(path, ident) {
-		return n.(*ast.CallExpr)
+	// Use only explicit path (optionally strip vendor path prefix) to reduce conflicts
+	path, ok := GetImportPath(selector, ctx)
+	if !ok {
+		return nil
+	}
+	if stripVendor {
+		if vendorIdx := strings.Index(path, vendorPath); vendorIdx >= 0 {
+			path = path[vendorIdx+len(vendorPath):]
+		}
+	}
+	if !c.Contains(path, ident) {
+		return nil
 	}
 
-	/*
-		// Try direct resolution
-		if c.Contains(selector, ident) {
-			log.Printf("c.Contains == true, %s, %s.", selector, ident)
-			return n.(*ast.CallExpr)
-		}
-	*/
+	return n.(*ast.CallExpr)
+}
 
-	return nil
+// ContainsCallExpr resolves the call expression name and type, and then determines
+// if the call exists with the call list
+func (c CallList) ContainsCallExpr(n ast.Node, ctx *Context) *ast.CallExpr {
+	selector, ident, err := GetCallInfo(n, ctx)
+	if err != nil {
+		return nil
+	}
+	if !c.Contains(selector, ident) && !c.ContainsPointer(selector, ident) {
+		return nil
+	}
+
+	return n.(*ast.CallExpr)
 }
